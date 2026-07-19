@@ -1,6 +1,7 @@
 import sqlite3
 import logging
 import sys
+import os
 from typing import Literal
 from mcp.server.fastmcp import FastMCP
 
@@ -9,7 +10,8 @@ from mcp.server.fastmcp import FastMCP
 # the JSON-RPC messages MCP uses to talk to the LLM, and the system will crash.
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s: %(message)s")
 
-DB_PATH = "playbook.db"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE_DIR, "data", "playbook.db")
 
 # Initialize the FastMCP server
 mcp = FastMCP("ContractSentry Playbook")

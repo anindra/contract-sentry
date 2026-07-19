@@ -1,8 +1,10 @@
 import sqlite3
+import os
 from typing import Literal
 from pydantic import BaseModel, Field
 
-DB_PATH = "../data/playbook.db"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE_DIR, "data", "playbook.db")
 
 # 1. Input Contract: Defines exactly what parameters the LLM is allowed to generate
 class RuleQuery(BaseModel):
