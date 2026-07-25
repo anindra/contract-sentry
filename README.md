@@ -49,21 +49,23 @@ ContractSentry uses a decoupled, asynchronous API design to support Human-in-the
 > **Step 1: Initiate a Chat (Streamed)**
 > Ask the agent to review a contract term. The agent will stream its thoughts, determine it needs to query the playbook, and **hit a breakpoint**.
 
-` ` `bash
+```bash
 curl -X POST http://localhost:8000/chat \
 -H "Content-Type: application/json" \
 -d '{"thread_id": "audit-session-01", "message": "The vendor wants a $500k liability cap. Is this allowed?"}'
-` ` `
+```
+
 *Expected Output: The stream will emit a `tool_call` event and safely close with a `breakpoint` status, freezing the state in PostgreSQL.*
 
 > **Step 2: Approve the Action**
 > Act as the Human-in-the-Loop. Approve the pending database tool call for the exact same `thread_id`.
 
-` ` `bash
+```bash
 curl -X POST http://localhost:8000/approve \
 -H "Content-Type: application/json" \
 -d '{"thread_id": "audit-session-01", "approve": true}'
-` ` `
+```
+
 *Expected Output: The agent resumes from Postgres memory, executes the SQLite query, and streams back the final compliance decision.*
 
 ## 🧪 Security & Red Teaming
