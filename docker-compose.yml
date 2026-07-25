@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # host.docker.internal allows the Docker container to talk to Ollama running natively on your Mac!
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # Point the app to the Postgres container for state persistence
+      - POSTGRES_URI=postgresql://sentry_user:securepassword123@postgres:5432/sentry_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=sentry_user
+      - POSTGRES_PASSWORD=securepassword123
+      - POSTGRES_DB=sentry_db
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentry_user -d sentry_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
