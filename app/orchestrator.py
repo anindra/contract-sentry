@@ -1,20 +1,22 @@
-from typing import Annotated
+from typing import Annotated, Sequence
+from typing_extensions import TypedDict
+import os
+
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from typing_extensions import TypedDict
+from langgraph.checkpoint.memory import MemorySaver
 
-# Import your Day 1 architecture
+# Import your enterprise schema and secure gateway
 from app.schemas import RuleQuery
 from app.gateway import fetch_playbook_rule
 
+
 # ---------------------------------------------------------
 # 1. TOOL DEFINITION
-# We use args_schema to bind your Pydantic prompt-injection 
-# shield directly to the LangChain tool.
 # ---------------------------------------------------------
 @tool(args_schema=RuleQuery)
 def check_compliance_rule(category: str) -> str:
@@ -22,77 +24,124 @@ def check_compliance_rule(category: str) -> str:
     Fetches strict enterprise compliance rules from the corporate playbook.
     Use this tool whenever you need to check if a contract clause violates company policy.
     """
-    # Wrap the string back into your Pydantic model to hit the gateway
     query = RuleQuery(category=category)
     response = fetch_playbook_rule(query)
     return response.rule_text
 
 
+tools = [check_compliance_rule]
+tool_node = ToolNode(tools)
+
+
 # ---------------------------------------------------------
-# 2. STATE DEFINITION
-# The memory payload passed between nodes in the graph.
+# 2. STATE & LLM SETUP
 # ---------------------------------------------------------
 class AgentState(TypedDict):
-    # 'add_messages' ensures new messages append to the list rather than overwriting it
-    messages: Annotated[list[BaseMessage], add_messages]
+    # Sequential list of messages tracking conversation and tool execution history
+    messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
-# ---------------------------------------------------------
-# 3. LLM & GRAPH SETUP
-# ---------------------------------------------------------
-# Initialize the local LLM. (Make sure you pulled this model via Ollama first!)
-# We use temperature=0 for strict, analytical responses.
+# Local deterministic LLM execution binding our schema-driven tools
 llm = ChatOllama(model="llama3.2", temperature=0)
-
-# Bind the tool to the LLM so it knows it exists
-tools = [check_compliance_rule]
 llm_with_tools = llm.bind_tools(tools)
 
-# Define the "Reasoning" Node
+
+# ---------------------------------------------------------
+# 3. NODE DEFINITIONS
+# ---------------------------------------------------------
 def reasoning_node(state: AgentState):
-    """The LLM reads the message history and decides what to do next."""
+    """The LLM reads message history and decides to either use a tool or output a final answer."""
     response = llm_with_tools.invoke(state["messages"])
     return {"messages": [response]}
 
-# Define the "Acting" Node
-tool_node = ToolNode(tools)
 
-# Build the Graph
+# ---------------------------------------------------------
+# 4. COMPILING THE CYCLIC GRAPH WITH MEMORY & BREAKPOINTS
+# ---------------------------------------------------------
 builder = StateGraph(AgentState)
 
-# Add our two nodes
 builder.add_node("reasoning", reasoning_node)
 builder.add_node("tools", tool_node)
 
-# Define the flow (Edges)
 builder.add_edge(START, "reasoning")
-
-# Conditional Edge: If the LLM wants to use a tool, go to 'tools'. 
-# Otherwise, it has the final answer, so go to END.
 builder.add_conditional_edges("reasoning", tools_condition)
-
-# After a tool runs, ALWAYS go back to reasoning so the LLM can read the result
 builder.add_edge("tools", "reasoning")
 
-# Compile the graph into an executable application
-contract_sentry_app = builder.compile()
+# Define our checkpointer to persist conversation threads in-memory
+memory = MemorySaver()
+
+# Compile the graph with two safety overrides:
+# 1. 'checkpointer' allows multi-turn thread memory
+# 2. 'interrupt_before' freezes the state machine right before executing the tool node
+contract_sentry_app = builder.compile(
+    checkpointer=memory,
+    interrupt_before=["tools"]
+)
+
 
 # ---------------------------------------------------------
-# 4. EXECUTION TEST
+# 5. HUMAN-IN-THE-LOOP CLI INTERACTION LOOP
 # ---------------------------------------------------------
 if __name__ == "__main__":
-    print("🤖 ContractSentry Agent Initialized.")
+    print("🤖 ContractSentry Agent Initialized with HITL & State Persistence.")
     print("Type 'exit' to quit.\n")
     
+    # We assign a hardcoded thread_id to persist this specific terminal session
+    config = {"configurable": {"thread_id": "auditor-terminal-session"}}
+    
     while True:
-        user_input = input("User: ")
+        user_input = input("User > ")
         if user_input.lower() in ["quit", "exit", "q"]:
             break
-            
-        # Execute the graph
-        result = contract_sentry_app.invoke(
-            {"messages": [HumanMessage(content=user_input)]}
+        
+        # 1. Start or continue execution
+        events = contract_sentry_app.stream(
+            {"messages": [HumanMessage(content=user_input)]},
+            config,
+            stream_mode="values"
         )
         
-        # The final message in the state is the LLM's final answer
-        print(f"\nSentry: {result['messages'][-1].content}\n")
+        for event in events:
+            # We stream values to monitor current execution state
+            pass
+            
+        # 2. Check if the state machine is currently paused at a breakpoint
+        state_snapshot = contract_sentry_app.get_state(config)
+        
+        while state_snapshot.next:
+            # If 'next' contains values, it means execution paused at a node (our 'tools' node)
+            next_node = state_snapshot.next[0]
+            
+            if next_node == "tools":
+                print("\n⚠️  [BREAKPOINT TRIGGERED] Human Approval Required!")
+                
+                # Retrieve the last message to inspect what parameters the AI generated
+                last_msg = state_snapshot.values["messages"][-1]
+                tool_calls = getattr(last_msg, "tool_calls", [])
+                
+                if tool_calls:
+                    call = tool_calls[0]
+                    print(f"   🤖 AI wishes to call: {call['name']}")
+                    print(f"   📝 Arguments generated: {call['args']}")
+                
+                # Prompt the auditor for a decision
+                approval = input("   👉 Approve this database query? (y/n): ")
+                
+                if approval.lower() in ["y", "yes", "approve"]:
+                    print("   🟢 Action Approved. Resuming graph execution...\n")
+                    # To resume execution, invoke the graph with a null input payload
+                    events = contract_sentry_app.stream(None, config, stream_mode="values")
+                    for event in events:
+                        pass
+                    # Re-verify the current snapshot status
+                    state_snapshot = contract_sentry_app.get_state(config)
+                else:
+                    print("   🔴 Action Rejected. Halting and wiping pending action.\n")
+                    # Clear pending actions to allow a new human turn
+                    contract_sentry_app.update_state(config, {"messages": [AIMessage(content="User rejected tool execution.")]}, as_node="reasoning")
+                    break
+        
+        # 3. Print the final synthesized answer once graph run terminates
+        state_snapshot = contract_sentry_app.get_state(config)
+        final_message = state_snapshot.values["messages"][-1]
+        print(f"\nSentry > {final_message.content}\n")
